@@ -20,6 +20,12 @@ spec:
           image: registry-172.22.21.115.sslip.io/dad-group-37/ws:v1.0.0
           ports:
             - containerPort: 3000
+          env:
+            - name: API_URL
+              value: "http://laravel-app"
+            # Definir WS_API_TOKEN igual ao do api/.env.production para gravar jogos na BD
+            # - name: WS_API_TOKEN
+            #   value: "segredo-partilhado"
           readinessProbe:
             httpGet:
               path: /socket.io/?EIO=4&transport=polling

@@ -1,32 +1,29 @@
 // =============================================================================
-// Game events: lobby, create / join / spectate, moves, clock, draw, resign,
-// disconnects and the bot.
+// Eventos de jogo: lobby, criar / entrar / assistir, lances, relógio, empate,
+// desistência, desconexões e bot.
 //
-// The server is the authority: clients only say what they WANT to do,
-// every move is checked with the rules engine, and the clock runs here.
-//
-// Every client -> server event accepts an optional callback (Socket.IO "ack"):
-//   socket.emit('game:move', { gameId, from, path }, (res) => { ... })
-//   res = { ok: true, ... } or { ok: false, error: '...' }
+// O servidor é autoritativo: os clientes apenas enviam intenções, cada lance é
+// validado pelo motor de regras FPD e o relógio corre aqui.
 // =============================================================================
 import { getUser } from '../state/connection.js';
 import { createGame, getGame, allGames, gamesOfPlayer, scheduleCleanup, removeGame } from '../state/games.js';
 import { initialState, play, applyMove, legalMoves, resign, timeout, forfeit, agreeDraw, canOfferDraw, opponent } from '../game/engine.js';
 import { chooseMove } from '../game/bot.js';
-import { gameStarting, gameEnded } from '../game/persist.js';
+import { gameEnded } from '../game/persist.js';
 
 const LOBBY_ROOM = 'lobby';
-const DISCONNECT_GRACE_MS = 60 * 1000;   // a player who leaves has 60 s to come back
-const BOT_DELAY_MS = 600;                // so the bot doesn't answer instantly
-const DEFAULT_TIME = { base: 5 * 60 * 1000, increment: 3 * 1000 }; // 5 min + 3 s per move
+const DISCONNECT_GRACE_MS = 60 * 1000;
+const BOT_DELAY_MS = 600;
+const DEFAULT_TIME = { base: 5 * 60 * 1000, increment: 3 * 1000 };
 const MODES = ['casual', 'ranked', 'bot'];
+
+const ENGINE_ERRORS_PT = {
+  'Game is already over': 'O jogo já terminou.',
+  'Illegal move': 'Jogada ilegal.',
+};
 
 export const gameRoom = (id) => `game:${id}`;
 
-// ---------- Who is this socket? -----------------------------------------------
-// Logged-in users come from the existing 'login' event (state/connection.js).
-// Anonymous users send 'game:guest' with an id they keep in localStorage,
-// so they can get back into their game after a refresh.
 function identity(socket) {
   const user = getUser(socket.id);
   if (user) return { key: `u:${user.id}`, id: user.id, name: user.name, guest: false };
@@ -38,7 +35,6 @@ function identity(socket) {
 const colorOf = (game, key) =>
   game.players.w?.key === key ? 'w' : game.players.b?.key === key ? 'b' : null;
 
-// ---------- What clients get to see -------------------------------------------
 function publicPlayer(p) {
   if (!p) return null;
   return { id: p.id, name: p.name, guest: !!p.guest, bot: !!p.bot, connected: p.bot || p.sockets.size > 0 };
@@ -49,7 +45,6 @@ function summary(game) {
     id: game.id,
     mode: game.mode,
     status: game.status,
-    stake: game.stake,
     isPublic: game.isPublic,
     timeControl: game.timeControl,
     players: { w: publicPlayer(game.players.w), b: publicPlayer(game.players.b) },
@@ -71,14 +66,13 @@ function view(game) {
     legalMoves: game.status === 'playing'
       ? legalMoves(s).map(({ from, to, path, captured, notation }) => ({ from, to, path, captured, notation }))
       : [],
-    clocks: currentClocks(game),   // ms left for each side right now
-    serverTime: Date.now(),        // so the client can count down smoothly
-    drawOffer: game.drawOffer,     // 'w' | 'b' | null - who offered
+    clocks: currentClocks(game),
+    serverTime: Date.now(),
+    drawOffer: game.drawOffer,
     canOfferDraw: game.status === 'playing' && canOfferDraw(s),
   };
 }
 
-// ---------- Broadcasting -------------------------------------------------------
 let io = null;
 
 function broadcastLobby() {
@@ -92,7 +86,6 @@ function broadcastState(game) {
   io.to(gameRoom(game.id)).emit('game:state', view(game));
 }
 
-// ---------- Clock --------------------------------------------------------------
 function currentClocks(game) {
   if (!game.clocks) return null;
   const clocks = { ...game.clocks };
@@ -107,11 +100,10 @@ function startTurnTimer(game) {
   game.flagTimer = setTimeout(() => {
     const left = currentClocks(game)[side];
     if (left <= 0) finish(game, timeout(game.state, side));
-    else startTurnTimer(game); // woke up a bit early
+    else startTurnTimer(game);
   }, game.clocks[side] + 50);
 }
 
-// After a move: charge the time used and add the increment
 function chargeClock(game, mover) {
   if (!game.clocks) return true;
   const used = Date.now() - game.turnStartedAt;
@@ -121,21 +113,7 @@ function chargeClock(game, mover) {
   return true;
 }
 
-// ---------- Game life cycle ----------------------------------------------------
-async function startGame(game) {
-  const check = await gameStarting(game);
-  if (!check.ok) {
-    const msg = check.data?.message || 'The game could not start (entry fee?)';
-    io.to(gameRoom(game.id)).emit('game:error', { gameId: game.id, error: msg });
-    game.status = 'waiting';
-    if (game.players.b && !game.players.b.bot) {
-      // put the joiner back out, keep the game open
-      for (const sid of game.players.b.sockets) io.sockets.sockets.get(sid)?.leave(gameRoom(game.id));
-      game.players.b = null;
-    }
-    broadcastLobby();
-    return;
-  }
+function startGame(game) {
   game.status = 'playing';
   game.startedAt = Date.now();
   game.turnStartedAt = Date.now();
@@ -159,14 +137,14 @@ function finish(game, endedState) {
   broadcastLobby();
   scheduleCleanup(game.id);
   gameEnded(game).then((r) => {
-    if (!r.ok) console.error(`[game ${game.id}] could not save the result`, r.status ?? r.error);
+    if (!r.ok) console.error(`[jogo ${game.id}] não foi possível guardar o resultado`, r.status ?? r.error);
   });
 }
 
 function afterMove(game, mover, newState) {
   if (!chargeClock(game, mover)) return finish(game, timeout(game.state, mover));
   game.state = newState;
-  game.drawOffer = null; // making a move rejects a pending offer (Art. 9.2b)
+  game.drawOffer = null; // efetuar um lance rejeita proposta de empate pendente (Art. 9.2b)
   if (newState.status === 'ended') return finish(game, newState);
   game.turnStartedAt = Date.now();
   startTurnTimer(game);
@@ -185,7 +163,6 @@ function maybeBotMove(game) {
   }, BOT_DELAY_MS);
 }
 
-// ---------- Players' sockets and disconnects ------------------------------------
 function attachSocket(game, color, socket) {
   const player = game.players[color];
   player.sockets.add(socket.id);
@@ -201,10 +178,9 @@ function detachSocket(game, color, socketId) {
   const player = game.players[color];
   if (!player || player.bot) return;
   player.sockets.delete(socketId);
-  if (player.sockets.size > 0) return; // still has another tab open
+  if (player.sockets.size > 0) return;
 
   if (game.status === 'waiting') {
-    // the creator left before anyone joined: close the game
     removeGame(game.id);
     broadcastLobby();
     return;
@@ -218,7 +194,6 @@ function detachSocket(game, color, socketId) {
   broadcastState(game);
 }
 
-// When someone identifies (login / guest) put them back in their games
 function rejoinGames(socket) {
   const me = identity(socket);
   if (!me) return;
@@ -229,7 +204,6 @@ function rejoinGames(socket) {
   }
 }
 
-// ---------- Helpers for handlers ------------------------------------------------
 const reply = (ack, data) => typeof ack === 'function' && ack(data);
 const fail = (ack, error) => reply(ack, { ok: false, error });
 
@@ -238,7 +212,7 @@ function newPlayer(me) {
 }
 
 function parseTimeControl(tc) {
-  if (tc === null) return null; // no clock
+  if (tc === null) return null;
   const base = Number(tc?.base ?? DEFAULT_TIME.base);
   const increment = Number(tc?.increment ?? DEFAULT_TIME.increment);
   if (!Number.isFinite(base) || base < 30 * 1000 || base > 60 * 60 * 1000) return DEFAULT_TIME;
@@ -246,26 +220,22 @@ function parseTimeControl(tc) {
   return { base, increment };
 }
 
-// =============================================================================
 export const handleGameEvents = (ioServer, socket) => {
   io = ioServer;
 
-  // --- identity ---------------------------------------------------------------
   socket.on('game:guest', (guest, ack) => {
     const id = typeof guest?.guestId === 'string' ? guest.guestId.slice(0, 40) : null;
-    if (!id) return fail(ack, 'guestId is required');
+    if (!id) return fail(ack, 'O identificador de convidado é obrigatório.');
     const name = typeof guest.name === 'string' && guest.name.trim()
       ? guest.name.trim().slice(0, 20)
-      : `Guest-${id.slice(0, 4)}`;
+      : `Convidado-${id.slice(0, 4)}`;
     socket.data.guest = { id, name };
     rejoinGames(socket);
     reply(ack, { ok: true, name });
   });
 
-  // The existing 'login' handler (events/connection.js) runs first and stores the user
   socket.on('login', () => rejoinGames(socket));
 
-  // --- lobby ------------------------------------------------------------------
   socket.on('game:lobby', (_, ack) => {
     socket.join(LOBBY_ROOM);
     broadcastLobby();
@@ -274,26 +244,21 @@ export const handleGameEvents = (ioServer, socket) => {
 
   socket.on('game:lobby-leave', () => socket.leave(LOBBY_ROOM));
 
-  // --- create -----------------------------------------------------------------
-  // { mode: 'casual'|'ranked'|'bot', color: 'w'|'b'|'random', isPublic, stake,
-  //   timeControl: { base, increment } | null, botLevel: 1-4 }
   socket.on('game:create', (opts = {}, ack) => {
     const me = identity(socket);
-    if (!me) return fail(ack, 'Log in or choose a guest name first');
+    if (!me) return fail(ack, 'Inicia sessão ou escolhe um nome de convidado primeiro.');
     const mode = MODES.includes(opts.mode) ? opts.mode : 'casual';
-    if (mode === 'ranked' && me.guest) return fail(ack, 'Ranked games are for registered players');
-    if (gamesOfPlayer(me.key).length > 0) return fail(ack, 'You are already in a game');
+    if (mode === 'ranked' && me.guest) return fail(ack, 'Jogos competitivos são apenas para utilizadores registados.');
+    if (gamesOfPlayer(me.key).length > 0) return fail(ack, 'Já estás num jogo em curso.');
 
-    let color = opts.color === 'w' || opts.color === 'b' ? opts.color : Math.random() < 0.5 ? 'w' : 'b';
+    const color = opts.color === 'w' || opts.color === 'b' ? opts.color : Math.random() < 0.5 ? 'w' : 'b';
     const timeControl = mode === 'bot' ? null : parseTimeControl(opts.timeControl);
     const players = { w: null, b: null };
     players[color] = newPlayer(me);
 
     const game = createGame({
       mode,
-      // ranked games are always public (project rules); others choose
       isPublic: mode === 'ranked' ? true : opts.isPublic !== false,
-      stake: mode === 'ranked' ? Math.max(1, parseInt(opts.stake, 10) || 10) : 0,
       timeControl,
       clocks: timeControl ? { w: timeControl.base, b: timeControl.base } : null,
       players,
@@ -306,7 +271,7 @@ export const handleGameEvents = (ioServer, socket) => {
     attachSocket(game, color, socket);
 
     if (mode === 'bot') {
-      game.players[opponent(color)] = { key: 'bot', id: null, name: `Bot (level ${game.botLevel})`, bot: true, sockets: new Set() };
+      game.players[opponent(color)] = { key: 'bot', id: null, name: `Bot (nível ${game.botLevel})`, bot: true, sockets: new Set() };
       startGame(game);
     } else {
       broadcastLobby();
@@ -315,37 +280,34 @@ export const handleGameEvents = (ioServer, socket) => {
     reply(ack, { ok: true, gameId: game.id, color });
   });
 
-  // --- join -------------------------------------------------------------------
-  socket.on('game:join', async ({ gameId } = {}, ack) => {
+  socket.on('game:join', ({ gameId } = {}, ack) => {
     const me = identity(socket);
-    if (!me) return fail(ack, 'Log in or choose a guest name first');
+    if (!me) return fail(ack, 'Inicia sessão ou escolhe um nome de convidado primeiro.');
     const game = getGame(gameId);
-    if (!game) return fail(ack, 'Game not found');
+    if (!game) return fail(ack, 'Jogo não encontrado.');
 
     const already = colorOf(game, me.key);
-    if (already) { // same person, another tab or after a refresh
+    if (already) {
       attachSocket(game, already, socket);
       socket.emit('game:state', view(game));
       return reply(ack, { ok: true, gameId, color: already });
     }
-    if (game.status !== 'waiting') return fail(ack, 'This game already started');
-    if (game.mode === 'ranked' && me.guest) return fail(ack, 'Ranked games are for registered players');
-    if (gamesOfPlayer(me.key).length > 0) return fail(ack, 'You are already in a game');
+    if (game.status !== 'waiting') return fail(ack, 'Este jogo já começou.');
+    if (game.mode === 'ranked' && me.guest) return fail(ack, 'Jogos competitivos são apenas para utilizadores registados.');
+    if (gamesOfPlayer(me.key).length > 0) return fail(ack, 'Já estás num jogo em curso.');
 
     const color = game.players.w ? 'b' : 'w';
     game.players[color] = newPlayer(me);
-    game.status = 'starting'; // nobody else can join while Laravel checks the fee
     attachSocket(game, color, socket);
     reply(ack, { ok: true, gameId, color });
-    await startGame(game);
+    startGame(game);
   });
 
-  // --- cancel a game nobody joined yet ------------------------------------------
   socket.on('game:cancel', ({ gameId } = {}, ack) => {
     const me = identity(socket);
     const game = getGame(gameId);
-    if (!game || !me || !colorOf(game, me.key)) return fail(ack, 'Game not found');
-    if (game.status !== 'waiting') return fail(ack, 'The game already started');
+    if (!game || !me || !colorOf(game, me.key)) return fail(ack, 'Jogo não encontrado.');
+    if (game.status !== 'waiting') return fail(ack, 'O jogo já começou.');
     io.to(gameRoom(game.id)).emit('game:cancelled', { gameId });
     io.in(gameRoom(game.id)).socketsLeave(gameRoom(game.id));
     removeGame(game.id);
@@ -353,11 +315,10 @@ export const handleGameEvents = (ioServer, socket) => {
     reply(ack, { ok: true });
   });
 
-  // --- spectate (anyone, even without logging in) ------------------------------
   socket.on('game:spectate', ({ gameId } = {}, ack) => {
     const game = getGame(gameId);
-    if (!game) return fail(ack, 'Game not found');
-    if (!game.isPublic) return fail(ack, 'This game is private');
+    if (!game) return fail(ack, 'Jogo não encontrado.');
+    if (!game.isPublic) return fail(ack, 'Este jogo é privado.');
     game.spectators.add(socket.id);
     socket.join(gameRoom(game.id));
     socket.emit('game:state', view(game));
@@ -372,59 +333,56 @@ export const handleGameEvents = (ioServer, socket) => {
     broadcastLobby();
   });
 
-  // Ask for the current state again (e.g. after the page reloads)
   socket.on('game:get', ({ gameId } = {}, ack) => {
     const game = getGame(gameId);
-    if (!game) return fail(ack, 'Game not found');
+    if (!game) return fail(ack, 'Jogo não encontrado.');
     const me = identity(socket);
-    if (!game.isPublic && !(me && colorOf(game, me.key))) return fail(ack, 'This game is private');
+    if (!game.isPublic && !(me && colorOf(game, me.key))) return fail(ack, 'Este jogo é privado.');
     reply(ack, { ok: true, game: view(game) });
   });
 
-  // --- moves --------------------------------------------------------------------
-  // { gameId, from: 22, path: [18] }  or a multi-capture: { from: 27, path: [18, 9] }
   socket.on('game:move', ({ gameId, from, path } = {}, ack) => {
     const me = identity(socket);
     const game = getGame(gameId);
-    if (!game) return fail(ack, 'Game not found');
-    if (game.status !== 'playing') return fail(ack, 'The game is not being played');
+    if (!game) return fail(ack, 'Jogo não encontrado.');
+    if (game.status !== 'playing') return fail(ack, 'O jogo não está a decorrer.');
     const color = me && colorOf(game, me.key);
-    if (!color) return fail(ack, 'You are not playing this game');
-    if (game.state.turn !== color) return fail(ack, 'It is not your turn');
+    if (!color) return fail(ack, 'Não estás a jogar esta partida.');
+    if (game.state.turn !== color) return fail(ack, 'Não é a tua vez de jogar.');
 
     const result = play(game.state, Number(from), Array.isArray(path) ? path.map(Number) : [Number(path)]);
-    if (!result.ok) return fail(ack, result.error);
+    if (!result.ok) return fail(ack, ENGINE_ERRORS_PT[result.error] ?? result.error);
 
     reply(ack, { ok: true, notation: result.move.notation });
     afterMove(game, color, result.state);
   });
 
-  // --- resign -------------------------------------------------------------------
   socket.on('game:resign', ({ gameId } = {}, ack) => {
     const me = identity(socket);
     const game = getGame(gameId);
     const color = game && me && colorOf(game, me.key);
-    if (!color) return fail(ack, 'You are not playing this game');
-    if (game.status !== 'playing') return fail(ack, 'The game is not being played');
+    if (!color) return fail(ack, 'Não estás a jogar esta partida.');
+    if (game.status !== 'playing') return fail(ack, 'O jogo não está a decorrer.');
     finish(game, resign(game.state, color));
     reply(ack, { ok: true });
   });
 
-  // --- draws --------------------------------------------------------------------
   socket.on('game:draw-offer', ({ gameId } = {}, ack) => {
     const me = identity(socket);
     const game = getGame(gameId);
     const color = game && me && colorOf(game, me.key);
-    if (!color) return fail(ack, 'You are not playing this game');
-    if (game.status !== 'playing') return fail(ack, 'The game is not being played');
-    if (!canOfferDraw(game.state)) return fail(ack, 'A draw can only be offered with 8 pieces or fewer and a king on each side');
-    if (game.drawOffer) return fail(ack, 'There is already a draw offer');
+    if (!color) return fail(ack, 'Não estás a jogar esta partida.');
+    if (game.status !== 'playing') return fail(ack, 'O jogo não está a decorrer.');
+    if (!canOfferDraw(game.state)) return fail(ack, 'Só podes propor empate com 8 ou menos peças e uma dama de cada lado.');
+    if (game.drawOffer) return fail(ack, 'Já existe uma proposta de empate pendente.');
 
     if (game.players[opponent(color)].bot) {
-      // the bot accepts only when it isn't winning on material
       const n = game.state.board.filter((p) => p && p.toLowerCase() === opponent(color)).length;
       const mine = game.state.board.filter((p) => p && p.toLowerCase() === color).length;
-      if (n <= mine) { finish(game, agreeDraw(game.state)); return reply(ack, { ok: true, accepted: true }); }
+      if (n <= mine) {
+        finish(game, agreeDraw(game.state));
+        return reply(ack, { ok: true, accepted: true });
+      }
       return reply(ack, { ok: true, accepted: false });
     }
     game.drawOffer = color;
@@ -436,8 +394,8 @@ export const handleGameEvents = (ioServer, socket) => {
     const me = identity(socket);
     const game = getGame(gameId);
     const color = game && me && colorOf(game, me.key);
-    if (!color) return fail(ack, 'You are not playing this game');
-    if (!game.drawOffer || game.drawOffer === color) return fail(ack, 'There is no draw offer for you');
+    if (!color) return fail(ack, 'Não estás a jogar esta partida.');
+    if (!game.drawOffer || game.drawOffer === color) return fail(ack, 'Não tens nenhuma proposta de empate para responder.');
     if (accept) finish(game, agreeDraw(game.state));
     else {
       game.drawOffer = null;
@@ -446,7 +404,6 @@ export const handleGameEvents = (ioServer, socket) => {
     reply(ack, { ok: true });
   });
 
-  // --- leaving --------------------------------------------------------------------
   const leaveEverything = () => {
     for (const game of allGames()) {
       if (game.spectators.delete(socket.id)) broadcastLobby();

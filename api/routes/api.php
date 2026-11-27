@@ -4,11 +4,16 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\GameController;
 use App\Http\Controllers\MatchController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\WsGameController;
+use App\Http\Middleware\VerifyWsToken;
 use Illuminate\Support\Facades\Route;
 
 // Rotas públicas
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/register', [AuthController::class, 'register']);
+
+// Integração interna servidor WebSocket -> API
+Route::post('/ws/games', [WsGameController::class, 'store'])->middleware(VerifyWsToken::class);
 
 // Rotas autenticadas (Sanctum)
 Route::middleware('auth:sanctum')->group(function () {

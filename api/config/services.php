@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'ws' => [
+        'token' => env('WS_API_TOKEN'),
+    ],
+
 ];
