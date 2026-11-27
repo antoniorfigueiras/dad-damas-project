@@ -25,9 +25,6 @@ return new class extends Migration
             // User Photo/Avatar
             $table->string('photo_avatar_filename')->nullable();
 
-            // Coin Balance
-            $table->integer('coins_balance')->default(0);
-
             // Users can be deleted with "soft deletes"
             $table->softDeletes();
 
@@ -71,9 +68,6 @@ return new class extends Migration
             // Interrupted - Match was interrupted due to technical issues (not finished; no winner)
             // Note: depending on the project's implementation, some statuses may never be used
             $table->enum('status', ['Pending', 'Playing', 'Ended', 'Interrupted']);
-
-            // The stake for this match
-            $table->integer('stake')->default(3);
 
             // Moment when the match began
             $table->dateTime('began_at')->nullable();
@@ -147,107 +141,19 @@ return new class extends Migration
             // custom data
             $table->json('custom')->nullable();
         });
-
-        Schema::create('coin_transaction_types', function (Blueprint $table) {
-            $table->id();
-            $table->string('name', 40);
-            // Credit - increase coins
-            // Debit - decrease coins
-            $table->enum('type', ['C', 'D']);
-            // Transaction Types can be deleted with "soft deletes"
-            $table->softDeletes();
-
-            // custom data
-            $table->json('custom')->nullable();
-        });
-
-        // Add default coin_transaction_types
-        DB::table('coin_transaction_types')->insert([
-            ['name' => 'Bonus', 'type' => 'C'],         // id = 1
-            ['name' => 'Coin purchase', 'type' => 'C'], // id = 2
-            ['name' => 'Game fee', 'type' => 'D'],      // id = 3
-            ['name' => 'Match stake', 'type' => 'D'],   // id = 4
-            ['name' => 'Game payout', 'type' => 'C'],      // id = 5
-            ['name' => 'Match payout', 'type' => 'C'],     // id = 6
-        ]);
-
-        Schema::create('coin_transactions', function (Blueprint $table) {
-            $table->id();
-
-            // Datetime of the coin transaction
-            $table->dateTime('transaction_datetime');
-
-            // User associated with the transaction
-            $table->unsignedBigInteger('user_id');
-            $table->foreign('user_id')->references('id')->on('users');
-
-            // Match associated with the transaction (optional - it can be null)
-            $table->unsignedBigInteger('match_id')->nullable();
-            $table->foreign('match_id')->references('id')->on('matches');
-
-            // Game associated with the transaction (optional - it can be null)
-            $table->unsignedBigInteger('game_id')->nullable();
-            $table->foreign('game_id')->references('id')->on('games');
-
-            // Type of the transaction
-            $table->unsignedBigInteger('coin_transaction_type_id');
-            $table->foreign('coin_transaction_type_id')->references('id')->on('coin_transaction_types');
-
-            // Amount of the transaction (coins)
-            // Positive -> increments the total amount of coins (Credit)
-            // Negative -> decrements the total amount of coins (Debit)
-            $table->integer('coins');
-
-            // custom data
-            $table->json('custom')->nullable();
-        });
-
-        Schema::create('coin_purchases', function (Blueprint $table) {
-            $table->id();
-
-            // Datetime of the coin purchase
-            $table->dateTime('purchase_datetime');
-
-            // User associated with the purchase
-            $table->unsignedBigInteger('user_id');
-            $table->foreign('user_id')->references('id')->on('users');
-
-            // Coin Transaction associated with this purchase
-            // One to One relation (purchase must have a coin transaction)
-            $table->unsignedBigInteger('coin_transaction_id')->unique();
-            $table->foreign('coin_transaction_id')->references('id')->on('coin_transactions');
-
-            // Amount of the purchase (real money in euros)
-            $table->decimal('euros', 8, 2);
-
-            // Purchases will involve a payment with a type and a reference
-            // MBWAY -  Phone number with 9 digits
-            // PAYPAL - eMail
-            // IBAN - bank transfer (2 letters + 23 digits)
-            // MB - Multibanco payment - entity number (5 digits) + Reference (9 digits))
-            // VISA - Visa card number (16 digits)
-            $table->enum('payment_type', ['MBWAY', 'PAYPAL', 'IBAN', 'MB', 'VISA']);
-            $table->string('payment_reference', 30);
-
-            // custom data
-            $table->json('custom')->nullable();
-        });
     }
+
     /**
      * Reverse the migrations.
      */
     public function down(): void
     {
-        Schema::drop('coin_purchases');
-        Schema::drop('coin_transactions');
-        Schema::drop('coin_transaction_types');
         Schema::drop('games');
         Schema::drop('matches');
 
         Schema::table('users', function (Blueprint $table) {
             $table->dropColumn('deleted_at');
             $table->dropColumn('custom');
-            $table->dropColumn('coins_balance');
             $table->dropColumn('photo_avatar_filename');
             $table->dropColumn('blocked');
             $table->dropColumn('nickname');
