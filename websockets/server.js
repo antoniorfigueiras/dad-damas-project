@@ -1,6 +1,7 @@
 import { Server } from "socket.io";
 import { handleChatEvents } from "./events/chat.js";
 import { handleConnectionEvents } from "./events/connection.js";
+import { handleGameEvents } from "./events/game.js";
 
 export const server = {
   io: null,
@@ -17,5 +18,6 @@ export const serverStart = (port) => {
 
     handleConnectionEvents(server.io, socket);
     handleChatEvents(server.io, socket);
+    handleGameEvents(server.io, socket);
   });
 };
