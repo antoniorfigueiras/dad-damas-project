@@ -1,4 +1,6 @@
 .kube
+.idea
+node_modules/
 justfile_teachers
 deployment_teachers
 
