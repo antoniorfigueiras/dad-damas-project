@@ -17,6 +17,7 @@ const authStore = useAuthStore()
   <header class="border-b bg-background">
     <nav class="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
       <RouterLink to="/" class="text-lg font-semibold">DAD Intermediate Submission</RouterLink>
+      <RouterLink to="/lobby" class="text-sm font-medium hover:underline">Play</RouterLink>
       <NavigationMenu>
         <NavigationMenuList>
           <NavigationMenuItem>
