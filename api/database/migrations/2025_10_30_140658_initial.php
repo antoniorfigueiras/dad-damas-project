@@ -25,7 +25,7 @@ return new class extends Migration
             // User Photo/Avatar
             $table->string('photo_avatar_filename')->nullable();
 
-            // Brain Coin Balance
+            // Coin Balance
             $table->integer('coins_balance')->default(0);
 
             // Users can be deleted with "soft deletes"
@@ -39,22 +39,28 @@ return new class extends Migration
         Schema::create('matches', function (Blueprint $table) {
             $table->id();
 
-            // Type of games in the match (Bisca dos 3; Bisca dos 9)
-            $table->enum('type', ['3', '9'])->default('3');
+            // Rhythm / time control of the match (FPD Rules: Classic, Rapid, Blitz)
+            $table->enum('type', ['Classic', 'Rapid', 'Blitz'])->default('Classic');
 
-            // Player 1 (usually, creates the match)
+            // Opening rule (FPD Appendix A: Free, 2-move drawn, 3-move drawn)
+            $table->enum('opening_type', ['Free', '2-move', '3-move'])->default('Free');
+
+            // Player 1 (White pieces; usually creates the match)
             $table->unsignedBigInteger('player1_user_id');
             $table->foreign('player1_user_id')->references('id')->on('users');
 
-            // Player 2 (usually, joins the match)
+            // Player 2 (Black pieces; usually joins the match)
             $table->unsignedBigInteger('player2_user_id');
             $table->foreign('player2_user_id')->references('id')->on('users');
 
-            // Winner (null when not ended)
+            // True when the match has ended with a draw
+            $table->boolean('is_draw')->default(false);
+
+            // Winner (null when not ended, or when a draw)
             $table->unsignedBigInteger('winner_user_id')->nullable();
             $table->foreign('winner_user_id')->references('id')->on('users');
 
-            // Loser (null when not ended)
+            // Loser (null when not ended, or when a draw)
             $table->unsignedBigInteger('loser_user_id')->nullable();
             $table->foreign('loser_user_id')->references('id')->on('users');
 
@@ -63,7 +69,7 @@ return new class extends Migration
             // Playing - Match is in progress
             // Ended - Match is over
             // Interrupted - Match was interrupted due to technical issues (not finished; no winner)
-            // Note: depending of the project's implementation, some status may never be used
+            // Note: depending on the project's implementation, some statuses may never be used
             $table->enum('status', ['Pending', 'Playing', 'Ended', 'Interrupted']);
 
             // The stake for this match
@@ -76,35 +82,29 @@ return new class extends Migration
             // Match total time (in seconds) = ended_at - began_at
             $table->decimal('total_time', 8, 2)->nullable();
 
-            // After the match ended, the total marks for player 1
-            $table->integer('player1_marks')->nullable();
-
-            // After the game ended, the total marks for player 2
-            $table->integer('player2_marks')->nullable();
-
-            // After the match ended, the sum of points for player 1 (all games)
-            $table->integer('player1_points')->nullable();
-
-            // After the match ended, the sum of points for player 2 (all games)
-            $table->integer('player2_points')->nullable();
+            // Match score per FPD Art. 10 (1 point per win, 0.5 per draw, 0 per loss)
+            $table->decimal('player1_points', 4, 1)->nullable();
+            $table->decimal('player2_points', 4, 1)->nullable();
 
             // custom data
             $table->json('custom')->nullable();
-
         });
 
         // NOTE: Only multiplayer games are registered
         Schema::create('games', function (Blueprint $table) {
             $table->id();
 
-            // Type of game (Bisca dos 3; Bisca dos 9)
-            $table->enum('type', ['3', '9'])->default('3');
+            // Rhythm / time control of the game (FPD Rules: Classic, Rapid, Blitz)
+            $table->enum('type', ['Classic', 'Rapid', 'Blitz'])->default('Classic');
 
-            // Player 1 (usually, creates the game)
+            // Opening rule (FPD Appendix A: Free, 2-move drawn, 3-move drawn)
+            $table->enum('opening_type', ['Free', '2-move', '3-move'])->default('Free');
+
+            // Player 1 (White pieces; usually creates the game)
             $table->unsignedBigInteger('player1_user_id');
             $table->foreign('player1_user_id')->references('id')->on('users');
 
-            // Player 2 (usually, joins the game)
+            // Player 2 (Black pieces; usually joins the game)
             $table->unsignedBigInteger('player2_user_id');
             $table->foreign('player2_user_id')->references('id')->on('users');
 
@@ -124,12 +124,10 @@ return new class extends Migration
             $table->foreign('match_id')->references('id')->on('matches');
 
             // Game status: 'Pending', 'Playing', 'Ended', or 'Interrupted'.
-            // Pending: waiting for players
-            // Playing: in progress
-            // Ended: finished
-            // Interrupted: stopped due to technical issues (unfinished; no winner)
-            // Note: depending on the project’s implementation, some statuses may never be used.
             $table->enum('status', ['Pending', 'Playing', 'Ended', 'Interrupted']);
+
+            // Reason the game ended (e.g. CaptureAll, Blocked, Resignation, Timeout, DrawAgreement, ThreefoldRepetition, TwentyMoveRule, Forcada12Moves)
+            $table->string('end_reason', 30)->nullable();
 
             // Moment when the game began
             $table->dateTime('began_at')->nullable();
@@ -138,12 +136,13 @@ return new class extends Migration
             // Game total time (in seconds) = ended_at - began_at
             $table->decimal('total_time', 8, 2)->nullable();
 
+            // Number of opponent pieces captured by each player (0 to 12)
+            $table->unsignedTinyInteger('player1_captures')->default(0);
+            $table->unsignedTinyInteger('player2_captures')->default(0);
 
-            // After the game ended, the total of points for player 1
-            $table->integer('player1_points')->nullable();
-
-            // After the game ended, the total of points for player 2
-            $table->integer('player2_points')->nullable();
+            // Total moves played and FPD notation history (e.g. ["9-13", "21-17", "14x23"])
+            $table->unsignedInteger('total_moves')->default(0);
+            $table->json('moves_notation')->nullable();
 
             // custom data
             $table->json('custom')->nullable();
@@ -195,8 +194,8 @@ return new class extends Migration
             $table->foreign('coin_transaction_type_id')->references('id')->on('coin_transaction_types');
 
             // Amount of the transaction (coins)
-            // Positive -> increments the total amount of brain coins (Credit)
-            // Negative -> decrements the total amount of brain coins (Debit)
+            // Positive -> increments the total amount of coins (Credit)
+            // Negative -> decrements the total amount of coins (Debit)
             $table->integer('coins');
 
             // custom data
