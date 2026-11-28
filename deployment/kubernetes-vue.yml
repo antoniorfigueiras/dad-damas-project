@@ -18,6 +18,7 @@ spec:
       containers:
         - name: web
           image: registry-172.22.21.115.sslip.io/dad-group-37/web:v1.0.0
+          imagePullPolicy: Always
           ports:
             - containerPort: 80
           readinessProbe:
