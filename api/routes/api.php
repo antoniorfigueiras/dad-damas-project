@@ -3,6 +3,7 @@
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\GameController;
 use App\Http\Controllers\MatchController;
+use App\Http\Controllers\StatisticsController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\WsGameController;
 use App\Http\Middleware\VerifyWsToken;
@@ -11,6 +12,8 @@ use Illuminate\Support\Facades\Route;
 // Rotas públicas
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/register', [AuthController::class, 'register']);
+Route::get('/statistics', [StatisticsController::class, 'summary']);
+Route::get('/leaderboards', [StatisticsController::class, 'leaderboards']);
 
 // Integração interna servidor WebSocket -> API
 Route::post('/ws/games', [WsGameController::class, 'store'])->middleware(VerifyWsToken::class);
@@ -21,6 +24,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Perfil do utilizador autenticado
     Route::get('/users/me', [UserController::class, 'me']);
+    Route::get('/users/me/statistics', [StatisticsController::class, 'myStatistics']);
     Route::put('/users/me', [UserController::class, 'update']);
     Route::delete('/users/me', [UserController::class, 'destroy']);
 
